@@ -20,6 +20,7 @@ except ImportError:
     from agent import run_personalized_market_brief_agent
 
 
+# Synthetic client profiles for testing
 def build_excel_bytes(output: Dict[str, Any], client_name: str, risk_profile: str) -> bytes:
     wb = Workbook()
     holdings_sheet = wb.active
@@ -38,25 +39,24 @@ def build_excel_bytes(output: Dict[str, Any], client_name: str, risk_profile: st
     summary_sheet = wb.create_sheet(title="Summary")
     summary_sheet.append(["Client Name", client_name or ""])
     summary_sheet.append(["Risk Profile", risk_profile or ""])
-    summary_sheet.append(["Provider", output.get("provider", "")])
     summary_sheet.append(["Advisor Summary", ""])
     for line in output.get("advisor_summary", "").splitlines():
         summary_sheet.append([line])
     summary_sheet.append([])
-    summary_sheet.append(["Talking Points", ""])
-    for point in output.get("talking_points", []):
-        summary_sheet.append([point])
+    summary_sheet.append(["Provider Response", output.get("provider_response", "")])
     if output.get("openai_key_error"):
-        summary_sheet.append([])
         summary_sheet.append(["OpenAI Key Error", output["openai_key_error"]])
 
     workflow_sheet = wb.create_sheet(title="Workflow")
-    workflow_sheet.append(["Step", "Type", "Tool", "Arguments / Content", "Scheduled"])
-    for i, step in enumerate(output.get("agent_steps", []), 1):
-        step_type = step.get("type", "")
-        tool = step.get("tool", "")
-        content = step.get("arguments", step.get("result_preview", step.get("content", "")))
-        workflow_sheet.append([i, step_type, tool, content, step.get("scheduled", "")])
+    workflow_sheet.append(["Tool", "Description", "Result Count", "Sectors", "Scheduled"])
+    for step in output.get("agent_steps", []):
+        workflow_sheet.append([
+            step.get("tool", ""),
+            step.get("description", ""),
+            step.get("result_count", ""),
+            ", ".join(step.get("sectors", [])) if step.get("sectors") else "",
+            step.get("scheduled", ""),
+        ])
 
     market_sheet = wb.create_sheet(title="Market Data")
     market_sheet.append(["Top Movers"])
@@ -92,75 +92,47 @@ SAMPLE_CLIENTS = {
     },
 }
 
-# Map step types to readable labels and icons
-STEP_TYPE_LABELS = {
-    "tool_call": ("🔧", "Tool Called"),
-    "tool_result": ("📤", "Tool Result"),
-    "agent_message": ("💬", "Agent Message"),
-}
-
-
-def _render_agent_steps(steps: list[dict]) -> None:
-    """Render agent steps in a structured, readable way."""
-    if not steps:
-        st.info("No agent steps recorded.")
-        return
-
-    for i, step in enumerate(steps, 1):
-        step_type = step.get("type", "unknown")
-        icon, label = STEP_TYPE_LABELS.get(step_type, ("•", step_type))
-
-        if step_type == "tool_call":
-            tool = step.get("tool", "unknown")
-            args = step.get("arguments", "")
-            st.markdown(f"**{icon} Step {i} — {label}: `{tool}`**")
-            if args:
-                st.code(args, language=None)
-
-        elif step_type == "tool_result":
-            preview = step.get("result_preview", "")
-            st.markdown(f"**{icon} Step {i} — {label}**")
-            if preview:
-                st.code(preview, language="json")
-
-        elif step_type == "agent_message":
-            content = step.get("content", "")
-            st.markdown(f"**{icon} Step {i} — {label}**")
-            if content:
-                st.markdown(f"> {content}")
-
-        else:
-            st.write(step)
-
-        st.divider()
-
 
 def main() -> None:
     st.set_page_config(page_title="Mili Market Brief Agent", layout="wide")
 
+    # persist last generated output so downloads / reruns keep the summary visible
     if "last_output" not in st.session_state:
         st.session_state["last_output"] = None
         st.session_state["last_client"] = ""
         st.session_state["last_profile"] = ""
 
+    st.markdown(
+        """
+        <style>
+        .css-1f4mp12, .css-1avcm0n, label {
+            color: #7C62C4 !important;
+        }
+        .main > div > .block-container h2,
+        .main > div > .block-container h3 {
+            color: #7C62C4 !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
     logo_path = os.path.join(os.path.dirname(__file__), "pics", "Mili Logo.svg")
-    try:
-        with open(logo_path, "r", encoding="utf-8") as f:
-            svg_content = f.read()
-        svg_data = urllib.parse.quote(svg_content)
-        logo_html = f"<img src='data:image/svg+xml;utf8,{svg_data}' style='width:75%; height:auto; display:block;' alt='Mili Logo' />"
-    except FileNotFoundError:
-        logo_html = ""
+    with open(logo_path, "r", encoding="utf-8") as f:
+        svg_content = f.read()
+    svg_data = urllib.parse.quote(svg_content)
 
     with st.container():
         st.markdown(
             f"""
             <div style='position:relative; margin-bottom:1rem; padding-top:0.5rem;'>
-                <div style='position:absolute; top:0; left:0; z-index:10;'>{logo_html}</div>
+                <div style='position:absolute; top:0; left:0; z-index:10;'>
+                    <img src='data:image/svg+xml;utf8,{svg_data}' style='width:75%; height:auto; max-height:none; display:block;' alt='Mili Logo' />
+                </div>
             </div>
             <div style='display:flex; flex-direction:column; align-items:center; justify-content:center; margin-top:2rem; margin-bottom:1rem;'>
                 <h2 style='color:#000000; text-align:center; margin:0.5rem 0 0.25rem;'>Mili Market Brief Agent</h2>
-                <p style='text-align:center; margin:0;'>Ingest a client's holdings, pull market data, and generate a personalized morning brief.</p>
+                <p style='text-align:center; margin:0;'>Use this demo agent to ingest a client's holdings, pull market data, and generate a personalized morning brief.</p>
             </div>
             """,
             unsafe_allow_html=True,
@@ -174,30 +146,23 @@ def main() -> None:
             list(SAMPLE_CLIENTS.keys()),
             help="Choose a realistic client scenario to test with",
         )
-
+        
         sample_data = SAMPLE_CLIENTS[selected_client]
         client_name = selected_client.split(" (")[0]
-        risk_profile = st.selectbox(
-            "Client risk profile",
-            ["Conservative", "Moderate", "Growth"],
-            index=["Conservative", "Moderate", "Growth"].index(sample_data["risk_profile"]),
-        )
-
+        risk_profile = st.selectbox("Client risk profile", ["Conservative", "Moderate", "Growth"], index=["Conservative", "Moderate", "Growth"].index(sample_data["risk_profile"]))
+        
         if not OPENAI_KEY_PRESENT:
-            st.warning(
-                "No API key found — running in local mode. "
-                "Set AI_API_KEY or OPENAI_API_KEY to enable OpenAI agent tool calls."
-            )
-
+            st.warning("Set OPENAI_API_KEY in your environment to enable OpenAI Responses tool calls in the agent.")
+        
         st.markdown("### Or Upload Custom Data")
         uploaded_file = st.file_uploader("Upload holdings CSV", type=["csv"])
-
+        
         holdings_text = st.text_area(
             "Or paste holdings (ticker, quantity, market_value, sector)",
             sample_data["holdings"],
             height=200,
         )
-
+        
         schedule = st.checkbox("Schedule for morning delivery", value=False)
         submit = st.form_submit_button("Generate Brief")
 
@@ -210,41 +175,35 @@ def main() -> None:
             except Exception:
                 st.error("Unable to read uploaded CSV file. Please check the format.")
 
-        with st.spinner("Running agent…"):
-            output = run_personalized_market_brief_agent(
-                client_name=client_name,
-                holdings_text=holdings_text,
-                uploaded_file=csv_buffer,
-                risk_profile=risk_profile,
-                schedule=schedule,
-            )
+        output = run_personalized_market_brief_agent(
+            client_name=client_name,
+            holdings_text=holdings_text,
+            uploaded_file=csv_buffer,
+            risk_profile=risk_profile,
+            schedule=schedule,
+        )
 
+        # persist the latest generated report so downloads and reruns keep the view
         st.session_state["last_output"] = output
         st.session_state["last_client"] = client_name
         st.session_state["last_profile"] = risk_profile
 
+    # Display the last generated report (if any)
     display_output = st.session_state.get("last_output")
     if display_output:
         if display_output.get("openai_key_error"):
             st.warning(
-                "OpenAI key validation failed — running in local mode instead. "
+                "OpenAI key validation failed, so the app is using the local summary workflow instead. "
                 f"Details: {display_output['openai_key_error']}"
             )
 
-        provider = display_output.get("provider", "")
-        if provider:
-            st.caption(f"Provider: **{provider}**")
-
-        # ── Advisor summary ──────────────────────────────────────────────────
+        # Summary container with download button aligned top-right
         with st.container():
             col_left, col_right = st.columns([8, 1])
             col_left.header("Advisor-ready Summary")
+            # Show download only when a summary exists
             if display_output.get("advisor_summary"):
-                excel_bytes = build_excel_bytes(
-                    display_output,
-                    st.session_state.get("last_client", ""),
-                    st.session_state.get("last_profile", ""),
-                )
+                excel_bytes = build_excel_bytes(display_output, st.session_state.get("last_client", ""), st.session_state.get("last_profile", ""))
                 col_right.download_button(
                     label="Download",
                     data=excel_bytes,
@@ -252,22 +211,17 @@ def main() -> None:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key=f"download_{st.session_state.get('last_client')}",
                 )
-            col_left.code(display_output.get("advisor_summary", ""), language=None)
 
-        # ── Talking points ───────────────────────────────────────────────────
-        talking_points = display_output.get("talking_points", [])
-        if talking_points:
-            st.subheader("Talking Points")
-            for point in talking_points:
-                st.markdown(f"- {point}")
+            col_left.markdown("```")
+            col_left.text(display_output.get("advisor_summary", ""))
+            col_left.markdown("```")
 
-        # ── Agent reasoning trace ────────────────────────────────────────────
-        with st.expander("Agent reasoning trace (tool calls & results)", expanded=False):
-            _render_agent_steps(display_output.get("agent_steps", []))
-
-        # ── Full structured output ───────────────────────────────────────────
-        with st.expander("Full structured output (JSON)", expanded=False):
+        with st.expander("Show structured agent output and tool reasoning"):
             st.json(display_output)
+
+        with st.expander("Agent workflow steps"):
+            for step in display_output.get("agent_steps", []):
+                st.write(step)
 
 
 if __name__ == "__main__":
