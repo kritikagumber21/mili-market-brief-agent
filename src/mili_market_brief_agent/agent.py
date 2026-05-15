@@ -218,58 +218,6 @@ def _extract_real_agent_steps(run_result: Any, holdings: list[dict], schedule: b
     return steps
 
 
-def _run_local_workflow(
-    client_name: str,
-    holdings_text: str,
-    uploaded_file: io.StringIO | None,
-    risk_profile: str,
-    schedule: bool,
-    extra: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    holding_objects = _parse_holdings_objects(holdings_text, uploaded_file)
-    holdings = [h.__dict__ for h in holding_objects]
-    sectors = _extract_sectors_from_holdings(holdings)
-    market_data = fetch_market_data(sectors)
-    summary = build_personalized_summary(client_name, holding_objects, market_data, risk_profile)
-    talking_points = _build_talking_points(holdings, risk_profile, sectors)
-
-    # Build explicit local workflow steps (not agent trace, but honest about what ran)
-    agent_steps = [
-        {
-            "type": "tool_call",
-            "tool": "parse_holdings (local)",
-            "arguments": f"Parsed {len(holdings)} holdings from {'CSV' if uploaded_file else 'pasted text'}",
-            "scheduled": schedule,
-        },
-        {
-            "type": "tool_call",
-            "tool": "get_market_data (local)",
-            "arguments": f"Fetched mock market data for sectors: {', '.join(sectors) if sectors else 'none detected'}",
-            "scheduled": schedule,
-        },
-        {
-            "type": "tool_call",
-            "tool": "build_personalized_summary (local)",
-            "arguments": f"Built summary for {client_name}, risk={risk_profile}, {len(holdings)} positions",
-            "scheduled": schedule,
-        },
-    ]
-
-    output = {
-        "advisor_summary": summary,
-        "talking_points": talking_points,
-        "sectors_in_focus": sectors,
-        "holdings": holdings,
-        "market_data": market_data,
-        "agent_steps": agent_steps,
-        "provider": "local (no API key)",
-        "provider_response": "",
-    }
-    if extra:
-        output.update(extra)
-    return output
-
-
 def run_personalized_market_brief_agent(
     client_name: str,
     holdings_text: str,
@@ -279,7 +227,9 @@ def run_personalized_market_brief_agent(
 ) -> dict[str, Any]:
     openai_api_key = os.getenv("AI_API_KEY") or os.getenv("OPENAI_API_KEY")
     if not openai_api_key:
-        return _run_local_workflow(client_name, holdings_text, uploaded_file, risk_profile, schedule)
+        raise ValueError(
+            "OpenAI API key is required. Please set AI_API_KEY or OPENAI_API_KEY environment variable."
+        )
 
     # Ensure the SDK can also find the key under its expected env var
     if not os.getenv("OPENAI_API_KEY"):
@@ -307,14 +257,7 @@ def run_personalized_market_brief_agent(
             talking_points = []
             sectors = []
     except Exception as exc:
-        return _run_local_workflow(
-            client_name,
-            holdings_text,
-            uploaded_file,
-            risk_profile,
-            schedule,
-            extra={"openai_key_error": str(exc)},
-        )
+        raise
 
     # Parse holdings and extract sectors once (not twice)
     holdings = _parse_holdings(holdings_text, uploaded_file)
@@ -324,7 +267,7 @@ def run_personalized_market_brief_agent(
     # Use the same market data that the agent used internally
     market_data = fetch_market_data(extracted_sectors)
 
-    # Use talking points from the agent if present; fall back to local personalized ones
+    # Fall back to locally-generated talking points if agent didn't produce any
     if not talking_points:
         talking_points = _build_talking_points(holdings, risk_profile, extracted_sectors)
 

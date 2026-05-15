@@ -82,7 +82,7 @@ You can optionally set model env vars:
 
 ## Notes
 
-The current implementation uses mocked market data and a local reasoning pipeline so it can run without a live market API. You can extend it by replacing the mock tools with real market and news feeds, or by integrating OpenAI / Mili agent SDK calls.
+This implementation requires an OpenAI API key to run. The market data and reasoning pipeline use the OpenAI Agents SDK with mocked market data feeds, so you don't need live market data connectors to demo the agent. You can extend it by replacing the mock tools with real market and news feeds.
 
 ## Why this agent
 

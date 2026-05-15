@@ -260,9 +260,6 @@ def build_excel_bytes(output: Dict[str, Any], client_name: str, risk_profile: st
     summary_sheet.append(["Talking Points", ""])
     for point in output.get("talking_points", []):
         summary_sheet.append([point])
-    if output.get("openai_key_error"):
-        summary_sheet.append([])
-        summary_sheet.append(["OpenAI Key Error", output["openai_key_error"]])
 
     workflow_sheet = wb.create_sheet(title="Workflow")
     workflow_sheet.append(["Step", "Type", "Tool", "Arguments / Content", "Scheduled"])

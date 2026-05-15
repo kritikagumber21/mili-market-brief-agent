@@ -132,9 +132,9 @@ def main() -> None:
         )
 
         if not OPENAI_KEY_PRESENT:
-            st.warning(
-                "No API key found — running in local mode. "
-                "Set AI_API_KEY or OPENAI_API_KEY to enable OpenAI agent tool calls."
+            st.error(
+                "⚠️ **OpenAI API key required.** "
+                "Please set the `AI_API_KEY` or `OPENAI_API_KEY` environment variable to use this agent."
             )
 
         st.markdown("### Or Upload Custom Data")
@@ -147,7 +147,7 @@ def main() -> None:
         )
 
         schedule = st.checkbox("Schedule for morning delivery", value=False)
-        submit = st.form_submit_button("Generate Brief")
+        submit = st.form_submit_button("Generate Brief", disabled=not OPENAI_KEY_PRESENT)
 
     if submit:
         # Input validation
@@ -162,14 +162,18 @@ def main() -> None:
                 except Exception:
                     st.error("Unable to read uploaded CSV file. Please check the format.")
 
-            with st.spinner("Running agent…"):
-                output = run_personalized_market_brief_agent(
-                    client_name=client_name,
-                    holdings_text=holdings_text,
-                    uploaded_file=csv_buffer,
-                    risk_profile=risk_profile,
-                    schedule=schedule,
-                )
+            try:
+                with st.spinner("Running agent…"):
+                    output = run_personalized_market_brief_agent(
+                        client_name=client_name,
+                        holdings_text=holdings_text,
+                        uploaded_file=csv_buffer,
+                        risk_profile=risk_profile,
+                        schedule=schedule,
+                    )
+            except ValueError as e:
+                st.error(f"Agent error: {str(e)}")
+                return
 
             st.session_state["last_output"] = output
             st.session_state["last_client"] = client_name
@@ -177,12 +181,6 @@ def main() -> None:
 
     display_output = st.session_state.get("last_output")
     if display_output:
-        if display_output.get("openai_key_error"):
-            st.warning(
-                "OpenAI key validation failed — running in local mode instead. "
-                f"Details: {display_output['openai_key_error']}"
-            )
-
         provider = display_output.get("provider", "")
         if provider:
             st.caption(f"Provider: **{provider}**")
