@@ -202,7 +202,8 @@ def main() -> None:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key=f"download_{st.session_state.get('last_client')}",
                 )
-            col_left.code(display_output.get("advisor_summary", ""), language=None)
+            # Display full summary with proper text wrapping (not code block)
+            col_left.write(display_output.get("advisor_summary", ""))
 
         # ── Talking points ───────────────────────────────────────────────────
         talking_points = display_output.get("talking_points", [])
