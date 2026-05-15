@@ -1,9 +1,12 @@
 import io
+import logging
 import os
 from typing import Any
-from agents import Agent, Runner, function_tool, AsyncOpenAI
+from agents import Agent, Runner, function_tool, AsyncOpenAI, ToolCallItem, ToolCallOutputItem, MessageOutputItem
 from agents.models.openai_responses import OpenAIResponsesModel
 from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 from .tools import (
     ClientHolding,
@@ -14,14 +17,9 @@ from .tools import (
 )
 
 
-def _build_openai_agent(api_key: str, schedule: bool) -> Agent:
+def _build_openai_agent(api_key: str) -> Agent:
     client = AsyncOpenAI(api_key=api_key)
     model = OpenAIResponsesModel(os.getenv("AI_MODEL", "gpt-4.1-mini"), openai_client=client)
-    schedule_note = (
-        "Morning delivery is SCHEDULED — mention this at the end of the advisor_summary."
-        if schedule
-        else "Morning delivery is NOT scheduled — do not mention scheduling."
-    )
     return Agent(
         name="Mili Market Brief Agent",
         instructions=(
@@ -37,12 +35,19 @@ def _build_openai_agent(api_key: str, schedule: bool) -> Agent:
             "OUTPUT REQUIREMENTS:\n"
             "- advisor_summary: 150–250 words. Written for the advisor to read aloud or paste into "
             "a client email. Structure it as: (a) what moved in the market today, (b) why it matters "
-            "specifically to this client given their holdings and risk profile, (c) one clear action "
-            f"item or question the advisor should raise. {schedule_note}\n"
+            "specifically to this client given their holdings and risk profile, (c) one clear action item "
+            "or question the advisor should raise. If the user specifies morning delivery is scheduled, "
+            "mention this at the end. Otherwise, do not mention scheduling.\n"
             "- talking_points: 3–4 punchy bullet points the advisor can reference during a call. "
             "Each should be specific to this client's positions — not generic market commentary. "
             "Reference actual tickers and sectors from the holdings.\n"
             "- sectors_in_focus: list only sectors that actually appear in the client's holdings.\n\n"
+
+            "RISK PROFILE GUIDANCE:\n"
+            "Tailor recommendations based on the client's risk profile:\n"
+            "- Conservative: emphasize capital preservation and downside risk; focus on bonds and dividend stocks.\n"
+            "- Moderate: balance growth and protection; discuss rebalancing opportunities.\n"
+            "- Growth: highlight opportunity and volatility tolerance; ensure alignment on drawdowns.\n\n"
 
             "TONE: Confident, concise, jargon-aware but not jargon-heavy. Written for a professional "
             "advisor, not the end client. Avoid filler phrases like 'it is worth noting' or 'as always'.\n\n"
@@ -51,7 +56,8 @@ def _build_openai_agent(api_key: str, schedule: bool) -> Agent:
             "- Never invent tickers or prices not present in the holdings or market data.\n"
             "- If holdings are empty or unparseable, set advisor_summary to a clear error message "
             "and return empty lists for the other fields.\n"
-            "- Always call both tools before producing output. Do not skip get_market_data."
+            "- Always call both tools before producing output. Do not skip get_market_data.\n"
+            "- Sector names are title-cased (e.g. 'Technology', 'Energy', 'Healthcare'). Use these exact names."
         ),
         tools=[parse_client_holdings, get_market_data],
         output_type=MarketBrief,
@@ -65,15 +71,21 @@ def _build_openai_agent(api_key: str, schedule: bool) -> Agent:
         "Parse raw client holdings text or CSV into a structured list of positions. "
         "Each position includes ticker symbol, quantity, market value in USD, and sector. "
         "Call this first, before get_market_data. Pass the full raw holdings string as raw_holdings. "
-        "Use source='csv' only if the input is comma-separated with headers; otherwise use source='text'."
+        "The function automatically detects whether the input is CSV or plain text format."
     ),
 )
-def parse_client_holdings(raw_holdings: str, source: str = "text") -> list[dict]:
-    if source == "csv":
-        buffer = io.StringIO(raw_holdings)
-        holdings = parse_holdings_csv(buffer)
-    else:
-        holdings = parse_holdings_text(raw_holdings)
+def parse_client_holdings(raw_holdings: str) -> list[dict]:
+    # Auto-detect format: if it starts with common CSV headers, treat as CSV
+    if raw_holdings.strip().lower().startswith(("ticker", "symbol", "quantity", "shares")):
+        try:
+            buffer = io.StringIO(raw_holdings)
+            holdings = parse_holdings_csv(buffer)
+            if holdings:
+                return [h.__dict__ for h in holdings]
+        except Exception:
+            pass
+    # Fall back to text parsing
+    holdings = parse_holdings_text(raw_holdings)
     return [h.__dict__ for h in holdings]
 
 
@@ -83,6 +95,7 @@ def parse_client_holdings(raw_holdings: str, source: str = "text") -> list[dict]
         "Fetch today's top market movers, relevant news headlines, and sector-level commentary "
         "for the sectors present in the client's portfolio. "
         "Call this after parse_holdings, passing the list of sector names extracted from the holdings. "
+        "Sector names must be title-cased (e.g., 'Technology', 'Energy', 'Healthcare'). "
         "Returns top movers, headlines, and sector coverage relevant to the client."
     ),
 )
@@ -149,16 +162,13 @@ def _build_talking_points(holdings: list[dict], risk_profile: str, sectors: list
 def _extract_real_agent_steps(run_result: Any, holdings: list[dict], schedule: bool) -> list[dict]:
     """
     Extract actual tool calls made during the agent run from the SDK's new_items trace.
-    Falls back to a labelled summary if the trace is unavailable.
+    Uses isinstance checks for robustness against SDK changes.
     """
     steps = []
     try:
         for item in run_result.new_items:
-            item_type = type(item).__name__
             # ToolCallItem: the agent decided to call a tool
-            if item_type == "ToolCallItem":
-                tool_name = getattr(item, "raw_item", {})
-                # raw_item is the underlying dict from the Responses API
+            if isinstance(item, ToolCallItem):
                 raw = item.raw_item if hasattr(item, "raw_item") else {}
                 name = raw.get("name", "") if isinstance(raw, dict) else getattr(raw, "name", "unknown_tool")
                 arguments = raw.get("arguments", "") if isinstance(raw, dict) else getattr(raw, "arguments", "")
@@ -169,9 +179,9 @@ def _extract_real_agent_steps(run_result: Any, holdings: list[dict], schedule: b
                     "scheduled": schedule,
                 })
             # ToolCallOutputItem: the tool returned a result
-            elif item_type == "ToolCallOutputItem":
+            elif isinstance(item, ToolCallOutputItem):
                 output = item.output if hasattr(item, "output") else str(item)
-                # Summarise rather than dump raw output (can be large)
+                # Summarize rather than dump raw output (can be large)
                 result_preview = str(output)[:300] + ("…" if len(str(output)) > 300 else "")
                 steps.append({
                     "type": "tool_result",
@@ -179,7 +189,7 @@ def _extract_real_agent_steps(run_result: Any, holdings: list[dict], schedule: b
                     "scheduled": schedule,
                 })
             # MessageOutputItem: the agent produced a text message mid-run
-            elif item_type == "MessageOutputItem":
+            elif isinstance(item, MessageOutputItem):
                 content = ""
                 try:
                     for block in item.raw_item.content:
@@ -193,9 +203,9 @@ def _extract_real_agent_steps(run_result: Any, holdings: list[dict], schedule: b
                         "content": content[:300],
                         "scheduled": schedule,
                     })
-    except Exception:
-        # If the trace API changes or is unavailable, fall back gracefully
-        pass
+    except Exception as e:
+        # Log unexpected errors in trace extraction but don't fail
+        logger.warning(f"Failed to extract agent steps: {e}")
 
     if not steps:
         # Fallback: show at least that the two required tools were invoked
@@ -236,23 +246,31 @@ def run_personalized_market_brief_agent(
         os.environ["OPENAI_API_KEY"] = openai_api_key
 
     holdings_source = "uploaded CSV" if uploaded_file is not None else "pasted text"
+    schedule_clause = "Mark this brief for scheduled morning delivery." if schedule else ""
     prompt = (
         f"Generate a personalized morning market brief for the following client.\n\n"
         f"Client name: {client_name}\n"
-        f"Risk profile: {risk_profile}\n"
+        f"Risk profile: {risk_profile} (tailor tone and recommendations accordingly)\n"
         f"Holdings source: {holdings_source}\n\n"
-        f"Raw holdings ({holdings_source}):\n{holdings_text}\n\n"
-        f"Follow the workflow: parse holdings → identify sectors → fetch market data → produce MarketBrief."
+        f"<holdings>\n"
+        f"{holdings_text}\n"
+        f"</holdings>\n\n"
+        f"{schedule_clause}\n\n"
+        f"Follow the workflow: 1) parse_holdings 2) identify sectors 3) get_market_data 4) produce MarketBrief."
     )
     try:
-        agent = _build_openai_agent(openai_api_key, schedule)
-        result = Runner.run_sync(agent, input=prompt, max_turns=10)
+        agent = _build_openai_agent(openai_api_key)
+        result = Runner.run_sync(agent, input=prompt, max_turns=5)
         brief = result.final_output_as(MarketBrief, raise_if_incorrect_type=False)
         if isinstance(brief, MarketBrief):
             advisor_summary = brief.advisor_summary
             talking_points = brief.talking_points
             sectors = brief.sectors_in_focus
         else:
+            logger.warning(
+                f"Structured output parsing failed. Expected MarketBrief but got {type(result.final_output).__name__}: "
+                f"{str(result.final_output)[:200]}"
+            )
             advisor_summary = str(result.final_output)
             talking_points = []
             sectors = []
