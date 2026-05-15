@@ -5,7 +5,6 @@ import urllib.parse
 from typing import Any, Dict
 
 import streamlit as st
-from openpyxl import Workbook
 
 OPENAI_KEY_PRESENT = bool(os.getenv("AI_API_KEY") or os.getenv("OPENAI_API_KEY"))
 
@@ -16,61 +15,10 @@ if ROOT_DIR not in sys.path:
 
 try:
     from mili_market_brief_agent.agent import run_personalized_market_brief_agent
+    from mili_market_brief_agent.tools import build_excel_bytes
 except ImportError:
     from agent import run_personalized_market_brief_agent
-
-
-def build_excel_bytes(output: Dict[str, Any], client_name: str, risk_profile: str) -> bytes:
-    wb = Workbook()
-    holdings_sheet = wb.active
-    holdings_sheet.title = "Holdings"
-    holdings_sheet.append(["Client Name", "Risk Profile", "Ticker", "Quantity", "Market Value", "Sector"])
-    for holding in output.get("holdings", []):
-        holdings_sheet.append([
-            client_name,
-            risk_profile,
-            holding.get("ticker", ""),
-            holding.get("quantity", 0),
-            holding.get("market_value", 0),
-            holding.get("sector", ""),
-        ])
-
-    summary_sheet = wb.create_sheet(title="Summary")
-    summary_sheet.append(["Client Name", client_name or ""])
-    summary_sheet.append(["Risk Profile", risk_profile or ""])
-    summary_sheet.append(["Provider", output.get("provider", "")])
-    summary_sheet.append(["Advisor Summary", ""])
-    for line in output.get("advisor_summary", "").splitlines():
-        summary_sheet.append([line])
-    summary_sheet.append([])
-    summary_sheet.append(["Talking Points", ""])
-    for point in output.get("talking_points", []):
-        summary_sheet.append([point])
-    if output.get("openai_key_error"):
-        summary_sheet.append([])
-        summary_sheet.append(["OpenAI Key Error", output["openai_key_error"]])
-
-    workflow_sheet = wb.create_sheet(title="Workflow")
-    workflow_sheet.append(["Step", "Type", "Tool", "Arguments / Content", "Scheduled"])
-    for i, step in enumerate(output.get("agent_steps", []), 1):
-        step_type = step.get("type", "")
-        tool = step.get("tool", "")
-        content = step.get("arguments", step.get("result_preview", step.get("content", "")))
-        workflow_sheet.append([i, step_type, tool, content, step.get("scheduled", "")])
-
-    market_sheet = wb.create_sheet(title="Market Data")
-    market_sheet.append(["Top Movers"])
-    for mover in output.get("market_data", {}).get("top_movers", []):
-        market_sheet.append([f"{mover.get('ticker', '')}: {mover.get('move', '')} ({mover.get('reason', '')})"])
-    market_sheet.append([])
-    market_sheet.append(["Headlines"])
-    for headline in output.get("market_data", {}).get("headlines", []):
-        market_sheet.append([headline])
-
-    buffer = io.BytesIO()
-    wb.save(buffer)
-    buffer.seek(0)
-    return buffer.read()
+    from tools import build_excel_bytes
 
 
 SAMPLE_CLIENTS = {
@@ -202,26 +150,30 @@ def main() -> None:
         submit = st.form_submit_button("Generate Brief")
 
     if submit:
-        csv_buffer = None
-        if uploaded_file is not None:
-            try:
-                csv_bytes = uploaded_file.getvalue().decode("utf-8")
-                csv_buffer = io.StringIO(csv_bytes)
-            except Exception:
-                st.error("Unable to read uploaded CSV file. Please check the format.")
+        # Input validation
+        if not holdings_text or not holdings_text.strip():
+            st.error("⚠️ Please provide holdings data (upload CSV or paste holdings).")
+        else:
+            csv_buffer = None
+            if uploaded_file is not None:
+                try:
+                    csv_bytes = uploaded_file.getvalue().decode("utf-8")
+                    csv_buffer = io.StringIO(csv_bytes)
+                except Exception:
+                    st.error("Unable to read uploaded CSV file. Please check the format.")
 
-        with st.spinner("Running agent…"):
-            output = run_personalized_market_brief_agent(
-                client_name=client_name,
-                holdings_text=holdings_text,
-                uploaded_file=csv_buffer,
-                risk_profile=risk_profile,
-                schedule=schedule,
-            )
+            with st.spinner("Running agent…"):
+                output = run_personalized_market_brief_agent(
+                    client_name=client_name,
+                    holdings_text=holdings_text,
+                    uploaded_file=csv_buffer,
+                    risk_profile=risk_profile,
+                    schedule=schedule,
+                )
 
-        st.session_state["last_output"] = output
-        st.session_state["last_client"] = client_name
-        st.session_state["last_profile"] = risk_profile
+            st.session_state["last_output"] = output
+            st.session_state["last_client"] = client_name
+            st.session_state["last_profile"] = risk_profile
 
     display_output = st.session_state.get("last_output")
     if display_output:

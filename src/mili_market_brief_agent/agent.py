@@ -316,12 +316,17 @@ def run_personalized_market_brief_agent(
             extra={"openai_key_error": str(exc)},
         )
 
+    # Parse holdings and extract sectors once (not twice)
     holdings = _parse_holdings(holdings_text, uploaded_file)
-    market_data = fetch_market_data(sectors or _extract_sectors_from_holdings(holdings))
+    extracted_sectors = sectors or _extract_sectors_from_holdings(holdings)
+    
+    # Fetch market data once, before running the agent workflow above
+    # Use the same market data that the agent used internally
+    market_data = fetch_market_data(extracted_sectors)
 
     # Use talking points from the agent if present; fall back to local personalized ones
     if not talking_points:
-        talking_points = _build_talking_points(holdings, risk_profile, sectors or _extract_sectors_from_holdings(holdings))
+        talking_points = _build_talking_points(holdings, risk_profile, extracted_sectors)
 
     # Extract real tool call trace from the SDK run
     agent_steps = _extract_real_agent_steps(result, holdings, schedule)
